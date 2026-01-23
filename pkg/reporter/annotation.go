@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -19,29 +18,23 @@ type NodeStorageStats struct {
 }
 
 const (
-	NodeAnnotationKey = "storage.terminus.io/stats"
-	nodeResourceName  = "storage.terminus.io/size"
+	nodeStoragePhyTotal = "storage.terminus.io/physical-total"
+	nodeStoragePhyUsed  = "storage.terminus.io/physical-used"
+	GiB                 = 1024 * 1024 * 1024
 )
 
-func (r *reporter) ReportToAnnotation(ctx context.Context, diskUsage uint64) error {
-	stats := NodeStorageStats{
-		OvercommitRatio: 1, // 允许 20% 超卖
-		TotalBytes:      diskUsage,
-	}
+func (r *reporter) ReportToAnnotation(ctx context.Context, diskUsage, diskTotal uint64) error {
 
-	// 2. 序列化 Value (JSON String)
-	statsBytes, err := json.Marshal(stats)
-	if err != nil {
-		return err
-	}
-	statsStr := string(statsBytes)
+	usage := fmt.Sprintf("%vGi", diskUsage/1024/1024/1024)
+	total := fmt.Sprintf("%vGi", diskTotal/1024/1024/1024)
 
-	// 3. 构造 Patch Payload
-	// 格式: {"metadata": {"annotations": {"key": "value"}}}
+	// usage := resource.NewQuantity(int64(diskUsage)/GiB, resource.BinarySI)
+	// total := resource.NewQuantity(int64(diskTotal)/GiB, resource.BinarySI)
 	patchMap := map[string]interface{}{
 		"metadata": map[string]interface{}{
 			"annotations": map[string]string{
-				NodeAnnotationKey: statsStr,
+				nodeStoragePhyTotal: total,
+				nodeStoragePhyUsed:  usage,
 			},
 		},
 	}
@@ -65,16 +58,13 @@ func (r *reporter) ReportToAnnotation(ctx context.Context, diskUsage uint64) err
 
 	klog.V(4).InfoS("Updated node stats annotation", "node", os.Getenv("NODE_NAME"))
 
-	virtualCapacity := uint64(float64(stats.TotalBytes) * stats.OvercommitRatio)
-	capacityQty := resource.NewQuantity(int64(virtualCapacity), resource.BinarySI)
-
 	statusPatch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"capacity": map[string]string{
-				nodeResourceName: capacityQty.String(),
+				nodeStoragePhyTotal: total,
 			},
 			"allocatable": map[string]string{
-				nodeResourceName: capacityQty.String(),
+				nodeStoragePhyTotal: total,
 			},
 		},
 	}

@@ -37,7 +37,7 @@ func (r *reporter) Run(ctx context.Context) {
 			return
 		}
 
-		if err := r.ReportToAnnotation(ctx, diskTotal.Total); err != nil {
+		if err := r.ReportToAnnotation(ctx, diskTotal.Used, diskTotal.Total); err != nil {
 			klog.Warningf("Failed to report annotation: %v", err)
 		} else {
 			klog.V(4).InfoS("Successfully reported node stats", "total", diskTotal.Total)

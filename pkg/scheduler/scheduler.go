@@ -2,53 +2,45 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog/v2"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
+	schdulerFramework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // 插件名称
 const (
-	schedulerName   = "terminus-scheduler"
-	annotationKey   = "storage.terminus.io/stats" // NRI 插件上报的 Key
-	limitAnnotation = "storage.terminus.io/size"  // Pod 申请的大小
+	SchedulerName       = "terminus-scheduler"
+	nodeAnnotationTotal = "storage.terminus.io/physical-total" // NRI 插件上报的 Key
+	nodeAnnotationUsed  = "storage.terminus.io/physical-used"
+	podLimitAnnotation  = "storage.terminus.io/size" // Pod 申请的大小
+	threshold           = 0.95
 )
-
-// NodeStorageStats 对应 Node Annotation 中的 JSON 结构
-type nodeStorageStats struct {
-	TotalBytes      uint64  `json:"total"`
-	OvercommitRatio float64 `json:"ratio"`
-	AllocatedBytes  uint64
-}
 
 // TerminusPlugin 插件结构体
 type TerminusSchedulerPlugin struct {
-	handle     framework.Handle
+	handle     schdulerFramework.Handle
 	statsCache sync.Map
+	podLister  listersv1.PodLister
 }
 
 // 确保实现了必要的接口
-var _ framework.FilterPlugin = &TerminusSchedulerPlugin{}
-var _ framework.ScorePlugin = &TerminusSchedulerPlugin{}
+var _ schdulerFramework.FilterPlugin = &TerminusSchedulerPlugin{}
+var _ schdulerFramework.ScorePlugin = &TerminusSchedulerPlugin{}
 
-func New(_ runtime.Object, h framework.Handle) (framework.Plugin, error) {
+func New(ctx context.Context, _ runtime.Object, h schdulerFramework.Handle) (schdulerFramework.Plugin, error) {
+	podLister := h.SharedInformerFactory().Core().V1().Pods().Lister()
 	plugin := &TerminusSchedulerPlugin{
-		handle: h,
+		handle:    h,
+		podLister: podLister,
 	}
-
-	// =======================================================
-	// 1. 设置 Informer 监听
-	// =======================================================
-	// SharedInformerFactory 是框架自带的，复用连接，效率极高
 	nodeInformer := h.SharedInformerFactory().Core().V1().Nodes().Informer()
 
-	// 注册回调：当 Node 发生变化时触发
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    plugin.handleNodeUpdate,                                              // 新增节点
 		UpdateFunc: func(oldObj, newObj interface{}) { plugin.handleNodeUpdate(newObj) }, // 更新节点
@@ -58,7 +50,7 @@ func New(_ runtime.Object, h framework.Handle) (framework.Plugin, error) {
 	return plugin, nil
 }
 
-func (p *TerminusSchedulerPlugin) Name() string { return schedulerName }
+func (p *TerminusSchedulerPlugin) Name() string { return SchedulerName }
 
 func (p *TerminusSchedulerPlugin) handleNodeUpdate(obj interface{}) {
 	node, ok := obj.(*v1.Node)
@@ -66,22 +58,24 @@ func (p *TerminusSchedulerPlugin) handleNodeUpdate(obj interface{}) {
 		return
 	}
 
-	// 1. 获取 Annotation
-	val := node.Annotations[annotationKey]
-	if val == "" {
+	totalAnno, err := resource.ParseQuantity(node.Annotations[nodeAnnotationTotal])
+	if err != nil {
+		return
+	}
+
+	usedAnno, err := resource.ParseQuantity(node.Annotations[nodeAnnotationUsed])
+
+	if err != nil {
+		return
+	}
+
+	if totalAnno.String() == "" || usedAnno.String() == "" {
 		p.statsCache.Delete(node.Name)
 		return
 	}
 
-	// 2. 解析 JSON (这里稍微耗时，但只在节点更新时做一次)
-	var stats nodeStorageStats
-	if err := json.Unmarshal([]byte(val), &stats); err != nil {
-		klog.ErrorS(err, "Failed to parse terminus stats", "node", node.Name)
-		return
-	}
-
-	// 3. 存入极速缓存
-	p.statsCache.Store(node.Name, &stats)
+	storageInfo := map[string]int64{nodeAnnotationUsed: usedAnno.Value(), nodeAnnotationTotal: totalAnno.Value()}
+	p.statsCache.Store(node.Name, storageInfo)
 }
 
 func (p *TerminusSchedulerPlugin) handleNodeDelete(obj interface{}) {
@@ -90,60 +84,98 @@ func (p *TerminusSchedulerPlugin) handleNodeDelete(obj interface{}) {
 	}
 }
 
-func (p *TerminusSchedulerPlugin) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+func (p *TerminusSchedulerPlugin) Filter(ctx context.Context, state *schdulerFramework.CycleState, pod *v1.Pod, nodeInfo *schdulerFramework.NodeInfo) *schdulerFramework.Status {
 	node := nodeInfo.Node()
+
 	if node == nil {
-		return framework.NewStatus(framework.Error, "node not found")
+		return schdulerFramework.NewStatus(schdulerFramework.Error, "node not found")
 	}
 	// 实际项目中建议使用 resource.ParseQuantity
-	requestStr := pod.Annotations[limitAnnotation]
+	requestStr := pod.Annotations[podLimitAnnotation]
 	if requestStr == "" {
 		return nil // 不需要存储，直接放行
 	}
-	// 假设这里解析出来了 10GB (这里简化写死，实际需解析 requestStr)
-	var requestBytes uint64 = 10 * 1024 * 1024 * 1024
+
+	requestBytes, err := resource.ParseQuantity(requestStr)
+	if err != nil {
+		return schdulerFramework.NewStatus(schdulerFramework.Unschedulable,
+			fmt.Sprintf("Invalid Parse : %s ", requestStr))
+	}
 
 	// 2. 【极速】从缓存读取节点状态
 	val, ok := p.statsCache.Load(node.Name)
 	if !ok {
-		// 节点没有上报数据，视为不可调度 (或者你可以策略性放行)
-		return framework.NewStatus(framework.Unschedulable, "Node storage stats missing")
+		return schdulerFramework.NewStatus(schdulerFramework.Unschedulable, "Node storage stats missing")
 	}
-	stats := val.(*nodeStorageStats)
+	stats := val.(map[string]int64)
 
 	// 3. 计算剩余空间 (支持超卖)
-	capacity := float64(stats.TotalBytes) * stats.OvercommitRatio
-	free := int64(capacity) - int64(stats.AllocatedBytes)
+	capacity := stats[nodeAnnotationTotal]
+	free := capacity - stats[nodeAnnotationUsed]
+	overCommit := int64(float64(capacity) * 1.2)
 
-	if free < int64(requestBytes) {
-		return framework.NewStatus(framework.Unschedulable,
-			fmt.Sprintf("Insufficient storage: req %d, free %d", requestBytes, free))
+	var nodeExistingAllocated int64 = 0
+	for _, podInfo := range nodeInfo.Pods {
+		if str, ok := podInfo.Pod.Annotations[podLimitAnnotation]; ok {
+			if q, err := resource.ParseQuantity(str); err == nil {
+				nodeExistingAllocated += q.Value()
+			}
+		}
+	}
+
+	if (nodeExistingAllocated + requestBytes.Value()) >= overCommit {
+		return schdulerFramework.NewStatus(schdulerFramework.Unschedulable,
+			fmt.Sprintf("Insufficient  storage: req %d, free %d", requestBytes.Value(), free))
+	}
+
+	safeLimit := int64(float64(capacity) * threshold)
+
+	if stats[nodeAnnotationUsed] > safeLimit {
+		return schdulerFramework.NewStatus(schdulerFramework.Unschedulable,
+			fmt.Sprintf("Insufficient Physical storage: used %d > limit %d (95%%)",
+				requestBytes.Value(), free))
 	}
 
 	return nil
 }
 
 // Score: 剩余空间越大的节点，分数越高 (LeastAllocated 策略)
-func (p *TerminusSchedulerPlugin) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	val, ok := p.statsCache.Load(nodeName)
+func (p *TerminusSchedulerPlugin) Score(ctx context.Context, state *schdulerFramework.CycleState, pod *v1.Pod, nodeName string) (int64, *schdulerFramework.Status) {
+	// nodeInfo.Node()
+	nodeInfo, err := p.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
+	if err == nil {
+		return 0, nil // 拿不到信息，给 0 分
+	}
+	val, ok := p.statsCache.Load(nodeInfo.Node().Name)
 	if !ok {
 		return 0, nil
 	}
-	stats := val.(*nodeStorageStats)
 
-	// 计算剩余率
-	capacity := float64(stats.TotalBytes) * stats.OvercommitRatio
-	free := int64(capacity) - int64(stats.AllocatedBytes)
+	stats := val.(map[string]int64)
+	capacity := stats[nodeAnnotationTotal]
+	free := capacity - stats[nodeAnnotationUsed]
+	overCommit := int64(float64(capacity) * 1.2)
 
-	if free <= 0 {
-		return 0, nil
+	var existingAllocated int64 = 0
+	for _, podInfo := range nodeInfo.Pods {
+		if str, ok := podInfo.Pod.Annotations[podLimitAnnotation]; ok {
+			if q, err := resource.ParseQuantity(str); err == nil {
+				existingAllocated += q.Value()
+			}
+		}
 	}
 
-	// 归一化为 0-100 分
-	// 分数 = (剩余空间 / 总空间) * 100
-	score := int64((float64(free) / capacity) * float64(framework.MaxNodeScore))
+	logicalFree := overCommit - existingAllocated
+
+	if logicalFree <= 0 || free <= 0 {
+		return 0, nil
+	}
+	logicalScore := int64((float64(logicalFree) / float64(overCommit)) * float64(schdulerFramework.MaxNodeScore))
+	physicalScore := int64((float64(free) / float64(capacity)) * float64(schdulerFramework.MaxNodeScore))
+
+	score := min(logicalScore, physicalScore)
 
 	return score, nil
 }
 
-func (p *TerminusSchedulerPlugin) ScoreExtensions() framework.ScoreExtensions { return nil }
+func (p *TerminusSchedulerPlugin) ScoreExtensions() schdulerFramework.ScoreExtensions { return nil }

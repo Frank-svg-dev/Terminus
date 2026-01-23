@@ -9,11 +9,7 @@ import (
 
 func NewEnforcer(opts ...Option) (*Enforcer, error) {
 
-	e := &Enforcer{
-		// SocketPath: "/var/run/nri/nri.sock",
-		// PluginName: "terminus",
-		// PluginIdx:  "00",
-	}
+	e := &Enforcer{}
 	for _, opt := range opts {
 		opt(e)
 	}

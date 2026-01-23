@@ -25,7 +25,7 @@ func GetDiskUsage(path string) (DiskStatus, error) {
 	blockSize := uint64(fs.Bsize)
 
 	ds.Total = fs.Blocks * blockSize
-	ds.Free = fs.Bavail * blockSize
+	ds.Free = fs.Bfree * blockSize
 	ds.Used = ds.Total - ds.Free
 	ds.BlockSize = blockSize
 

@@ -4,9 +4,9 @@
 
 # --- 变量定义 ---
 BINARY_NAME=terminus-enforcer
-EXPORTER_BIN_NAME=terminus-exporter
+SCHEDULER_BIN_NAME=terminus-scheduler
 CMD_PATH=./cmd/terminus-enforcer
-EXPORTER_PATH=./cmd/terminus-exporter
+SCHEDULER_PATH=./cmd/terminus-scheduler
 BIN_DIR=./bin
 DOCKER_IMAGE=terminus-enforcer
 VERSION?=v0.1.0
@@ -35,16 +35,16 @@ build: ## 编译当前平台的二进制文件
 	go build ${LDFLAGS} -o ${BIN_DIR}/${BINARY_NAME} ${CMD_PATH}
 	@echo "✅ Build success: ${BIN_DIR}/${BINARY_NAME}"
 
-.PHONY: build-exporter
-build-exporter: ## 交叉编译 Linux (amd64) 版本 (适合生产环境/Docker)
-	@echo "🐧 Building Linux amd64  exporter static binary..."
+.PHONY: build-scheduler
+build-scheduler: ## 交叉编译 Linux (amd64) 版本 (适合生产环境/Docker)
+	@echo "🐧 Building Linux amd64  scheduler static binary..."
 	@mkdir -p ${BIN_DIR}
 	# 关键参数解释：
 	# CGO_ENABLED=0 : 禁用 CGO，强制使用 Go 原生实现（如 DNS 解析），切断对 libc 的依赖
 	# -a            : 强制重新编译所有包
 	# -ldflags      : -s -w 去掉符号表减小体积，-extldflags "-static" 确保完全静态
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s -w -extldflags "-static"' -o ${BIN_DIR}/${EXPORTER_BIN_NAME}-linux ${EXPORTER_PATH}
-	@echo "✅ Linux binary ready: ${BIN_DIR}/${EXPORTER_BIN_NAME}-linux"
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s -w -extldflags "-static"' -o ${BIN_DIR}/${SCHEDULER_BIN_NAME}-linux ${SCHEDULER_PATH}
+	@echo "✅ Linux binary ready: ${BIN_DIR}/${SCHEDULER_BIN_NAME}-linux"
 
 
 .PHONY: build-linux
