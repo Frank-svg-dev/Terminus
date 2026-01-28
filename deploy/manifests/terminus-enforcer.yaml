@@ -28,6 +28,10 @@ spec:
       - name: terminus-enforcer
         image: ghcr.m.daocloud.io/terminus/enforcer:latest
         imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9201
+          name: http
+          protocol: TCP
         terminationMessagePath: /tmp/termination-log
         terminationMessagePolicy: File
         securityContext:
