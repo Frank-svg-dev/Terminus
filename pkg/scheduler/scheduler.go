@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	schdulerFramework "k8s.io/kubernetes/pkg/scheduler/framework"
+	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 )
 
 // 插件名称
@@ -28,17 +29,32 @@ type TerminusSchedulerPlugin struct {
 	handle     schdulerFramework.Handle
 	statsCache sync.Map
 	podLister  listersv1.PodLister
+	args       *TerminusArgs
 }
 
 // 确保实现了必要的接口
 var _ schdulerFramework.FilterPlugin = &TerminusSchedulerPlugin{}
 var _ schdulerFramework.ScorePlugin = &TerminusSchedulerPlugin{}
 
-func New(ctx context.Context, _ runtime.Object, h schdulerFramework.Handle) (schdulerFramework.Plugin, error) {
+func New(ctx context.Context, obj runtime.Object, h schdulerFramework.Handle) (schdulerFramework.Plugin, error) {
+
+	args := &TerminusArgs{}
+	args.SetDefaults()
+	if err := frameworkruntime.DecodeInto(obj, args); err != nil {
+		return nil, fmt.Errorf("failed to decode TerminusArgs: %v", err)
+	}
+
+	if args.OversubscriptionRatio < 1.0 {
+		return nil, fmt.Errorf("oversubscriptionRatio must be >= 1.0, got %f", args.OversubscriptionRatio)
+	}
+
+	fmt.Printf("🚀 Terminus Scheduler loaded with Ratio: %.2f\n", args.OversubscriptionRatio)
+
 	podLister := h.SharedInformerFactory().Core().V1().Pods().Lister()
 	plugin := &TerminusSchedulerPlugin{
 		handle:    h,
 		podLister: podLister,
+		args:      args,
 	}
 	nodeInformer := h.SharedInformerFactory().Core().V1().Nodes().Informer()
 
@@ -111,7 +127,7 @@ func (p *TerminusSchedulerPlugin) Filter(ctx context.Context, state *schdulerFra
 	// 3. 计算剩余空间 (支持超卖)
 	capacity := stats[nodeAnnotationTotal]
 	free := capacity - stats[nodeAnnotationUsed]
-	overCommit := int64(float64(capacity) * 1.2)
+	overCommit := int64(float64(capacity) * p.args.OversubscriptionRatio)
 
 	var nodeExistingAllocated int64 = 0
 	for _, podInfo := range nodeInfo.Pods {
@@ -153,7 +169,7 @@ func (p *TerminusSchedulerPlugin) Score(ctx context.Context, state *schdulerFram
 	stats := val.(map[string]int64)
 	capacity := stats[nodeAnnotationTotal]
 	free := capacity - stats[nodeAnnotationUsed]
-	overCommit := int64(float64(capacity) * 1.2)
+	overCommit := int64(float64(capacity) * p.args.OversubscriptionRatio)
 
 	var existingAllocated int64 = 0
 	for _, podInfo := range nodeInfo.Pods {

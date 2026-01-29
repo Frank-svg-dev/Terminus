@@ -52,19 +52,22 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
-		store := metadata.NewAsyncStore(1000)
+		store := metadata.NewAsyncStore(1000, kClient)
 		qm, collector, err := genrateQuotaManager(containerdPath, store)
 		if err != nil {
 			return err
 		}
 
-		storageHook := hooks.NewStorageHook(qm, store)
+		go func() {
+			store.TriggerRestore()
+		}()
+
+		storageHook := hooks.NewStorageHook(qm, store, kClient)
 
 		enforcer, err := nri.NewEnforcer(
 			nri.WithSocketPath(socketPath),
 			nri.WithPluginName(pluginName),
 			nri.WithPluginIdx(pluginIdx),
-			nri.WithK8sClient(kClient),
 			nri.WithHook(storageHook),
 		)
 		if err != nil {

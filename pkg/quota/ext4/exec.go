@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 
+	"github.com/Frank-svg-dev/Terminus/pkg/quota"
 	"github.com/Frank-svg-dev/Terminus/pkg/utils"
 	"k8s.io/klog/v2"
 )
@@ -34,7 +35,7 @@ func (e *Ext4CLI) SetProjectID(path string, projectID uint32) error {
 func (e *Ext4CLI) SetQuota(projectID uint32, limitBytes uint64) error {
 	// 命令格式: setquota -P <ProjectID> <SoftLimit> <HardLimit> <InodesSoft> <InodesHard> <MountPoint>
 	block := limitBytes / 1024
-	mountPoint, err := utils.GetMountPoint("/var/lib/containerd")
+	mountPoint, err := utils.GetMountPoint(quota.ContainerdRootPath)
 	if err != nil {
 		mountPoint = "/"
 	}

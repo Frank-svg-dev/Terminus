@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Frank-svg-dev/Terminus/pkg/quota/xfs"
+	"github.com/Frank-svg-dev/Terminus/pkg/quota"
 )
 
-func (e *Ext4CLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint32]xfs.QuotaReport, error) {
+func (e *Ext4CLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint32]quota.QuotaReport, error) {
 	args := []string{"-P", "-n", mountPoint}
 
 	cmd := exec.Command("repquota", args...)
@@ -22,7 +22,7 @@ func (e *Ext4CLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint3
 		return nil, fmt.Errorf("执行 repquota 失败: %v, 输出: %s", err, string(output))
 	}
 
-	reports := make(map[uint32]xfs.QuotaReport)
+	reports := make(map[uint32]quota.QuotaReport)
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 
 	for scanner.Scan() {
@@ -56,7 +56,7 @@ func (e *Ext4CLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint3
 		// 根据你的结构体定义，Limit 通常指 Hard Limit
 		hardLimitBlocks, _ := strconv.ParseUint(fields[4], 10, 64)
 
-		reports[uint32(idVal)] = xfs.QuotaReport{
+		reports[uint32(idVal)] = quota.QuotaReport{
 			ID:    uint32(idVal),
 			Used:  usedBlocks * 1024,      // 转换为 Bytes
 			Limit: hardLimitBlocks * 1024, // 转换为 Bytes

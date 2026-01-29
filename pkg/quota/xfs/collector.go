@@ -5,15 +5,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/Frank-svg-dev/Terminus/pkg/quota"
 )
 
-type QuotaReport struct {
-	ID    uint32
-	Used  uint64
-	Limit uint64
-}
-
-func (e *XFSCLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint32]QuotaReport, error) {
+func (e *XFSCLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint32]quota.QuotaReport, error) {
 	// 关键参数：-N (省略头尾，方便解析)
 	cmdStr := fmt.Sprintf("report -p -n -N -%s", typeFlag)
 	cmd := exec.Command("xfs_quota", "-x", "-c", cmdStr, mountPoint)
@@ -23,7 +19,7 @@ func (e *XFSCLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint32
 		return nil, fmt.Errorf("xfs_quota report failed: %v", err)
 	}
 
-	reports := make(map[uint32]QuotaReport)
+	reports := make(map[uint32]quota.QuotaReport)
 	lines := strings.Split(string(out), "\n")
 
 	for _, line := range lines {
@@ -57,7 +53,7 @@ func (e *XFSCLI) FetchAllReports(mountPoint string, typeFlag string) (map[uint32
 			limit, _ = strconv.ParseUint(fields[2], 10, 64)
 		}
 
-		reports[uint32(idUint)] = QuotaReport{
+		reports[uint32(idUint)] = quota.QuotaReport{
 			ID:    uint32(idUint),
 			Used:  used,
 			Limit: limit,

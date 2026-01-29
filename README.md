@@ -45,7 +45,7 @@ Terminus consists of three micro-components working in harmony:
 
 ```mermaid
 graph TD
-    User((User)) -->|Annotation: size.disk=10Gi| API[K8s API Server]
+    User((User)) -->|Annotation: storage.terminus.io/size: '10Gi'| API[K8s API Server]
     
     subgraph Control Plane
         API -->|Watch| Scheduler[Kube-Scheduler]

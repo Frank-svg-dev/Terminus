@@ -59,12 +59,9 @@ func (c *Ext4Collector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect 核心逻辑：每次 Prometheus 来拉取时会被调用
 func (c *Ext4Collector) Collect(ch chan<- prometheus.Metric) {
-	// 1. 获取空间数据 (Blocks)
-	// 这里的 "b" 代表 Block
 	blockReports, err := c.exec.FetchAllReports(c.mountPoint, "b")
 	if err != nil {
 		klog.ErrorS(err, "Failed to collect block metrics")
-		// 注意：不要在这里 return，尽量尝试去采集 Inode
 	} else {
 		for id, r := range blockReports {
 			containerInfo, ok := c.store.Get(id)

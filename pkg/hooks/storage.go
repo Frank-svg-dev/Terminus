@@ -3,17 +3,22 @@ package hooks
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/Frank-svg-dev/Terminus/pkg/metadata"
 	"github.com/Frank-svg-dev/Terminus/pkg/nri"
 	"github.com/Frank-svg-dev/Terminus/pkg/quota"
 	"github.com/containerd/nri/pkg/api"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
 
@@ -22,19 +27,23 @@ const (
 	ContainerdBasePath  = "/run/containerd/io.containerd.runtime.v2.task/k8s.io/"
 	ContainerdRootPath  = "/var/lib/containerd"
 	SystemMountInfoFile = "/proc/1/mountinfo"
+	ProjectIDAnnotation = "storage.terminus.io/project-id"
+	quotaEnableLabel    = "storage.terminus.io/quota"
 )
 
 // StorageHook 负责处理磁盘限额
 type StorageHook struct {
-	qm    quota.QuotaManager
-	store *metadata.AsyncStore
+	qm      quota.QuotaManager
+	store   *metadata.AsyncStore
+	kClient kubernetes.Interface
 }
 
 // 构造函数：需要注入底层的 QuotaManager
-func NewStorageHook(qm quota.QuotaManager, store *metadata.AsyncStore) nri.Hook {
+func NewStorageHook(qm quota.QuotaManager, store *metadata.AsyncStore, kClient kubernetes.Interface) nri.Hook {
 	return &StorageHook{
-		qm:    qm,
-		store: store,
+		qm:      qm,
+		store:   store,
+		kClient: kClient,
 	}
 }
 
@@ -45,14 +54,9 @@ func (h *StorageHook) Process(ctx context.Context, pod *api.PodSandbox, containe
 }
 
 func (h *StorageHook) Start(ctx context.Context, pod *api.PodSandbox, container *api.Container) error {
-
 	limitStr, ok := pod.Annotations[DiskAnnotation]
 	if !ok {
 		return nil
-		// limitStr, ok = m.namespace[pod.Namespace]
-		// if !ok {
-		// 	return nil
-		// }
 	}
 
 	q, err := resource.ParseQuantity(limitStr)
@@ -105,6 +109,11 @@ func (h *StorageHook) Start(ctx context.Context, pod *api.PodSandbox, container 
 		ContainerName: container.Name,
 	})
 
+	if err := h.handleUpdatePod(ctx, pod.Name, pod.Namespace, container.Name, fmt.Sprintf("%d", uint32(snapshotID))); err != nil {
+		klog.Warningf("%s/%s pod label update failed, It may affect the reporting of pod disk monitoring metrics, err: %v",
+			pod.Namespace, pod.Name, err)
+	}
+
 	// if err := applyXFSQuota(snapshotID, rootfsPath, limitMB); err != nil {
 	// 	klog.Errorf("Failed to apply quota: %v", err)
 	// }
@@ -125,13 +134,41 @@ func (h *StorageHook) Stop(ctx context.Context, pod *api.PodSandbox, container *
 		klog.Warningf("found Project ID for %s, failed", foundPath)
 		return err
 	}
-	if err := h.qm.RemoveQuota("/", uint32(snapshotID)); err != nil {
+	if err := h.qm.RemoveQuota(ContainerdRootPath, uint32(snapshotID)); err != nil {
 		klog.Warningf("remove Project ID quota for %s, failed", foundPath)
 		return err
 	}
 
 	h.store.TriggerDelete(uint32(snapshotID))
 	return nil
+}
+
+func (h *StorageHook) handleUpdatePod(ctx context.Context, podName, namespace, containerName, projectID string) error {
+	containerAnnotation := fmt.Sprintf("%s.%s", ProjectIDAnnotation, containerName)
+	patchPayload := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]string{
+				quotaEnableLabel: "enabled",
+			},
+			"annotations": map[string]string{
+				containerAnnotation: projectID,
+			},
+		},
+	}
+
+	data, err := json.Marshal(patchPayload)
+	if err != nil {
+		return err
+	}
+
+	_, err = h.kClient.CoreV1().Pods(namespace).Patch(
+		ctx,
+		podName,
+		types.MergePatchType,
+		data,
+		metav1.PatchOptions{},
+	)
+	return err
 }
 
 func getOverlayPath(containerRootfs string) (uint64, string, error) {

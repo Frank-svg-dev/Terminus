@@ -13,3 +13,7 @@ profiles:
         enabled:
           - name: terminus-scheduler
             weight: 1
+    pluginConfig:
+      - name: Terminus-scheduler
+        args:
+          oversubscriptionRatio: 1.5
