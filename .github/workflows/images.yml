@@ -7,6 +7,10 @@ on:
         description: "Optional image tag to publish, for example v1.1.0"
         required: false
         type: string
+      image_owner:
+        description: "Optional GHCR owner/namespace, defaults to the repository owner"
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -67,9 +71,12 @@ jobs:
       - name: Set image variables
         id: vars
         env:
+          DEFAULT_IMAGE_OWNER: ${{ github.repository_owner }}
+          INPUT_IMAGE_OWNER: ${{ inputs.image_owner }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          owner="${INPUT_IMAGE_OWNER:-$DEFAULT_IMAGE_OWNER}"
+          owner="${owner,,}"
           version=""
 
           if [[ -n "${INPUT_VERSION}" ]]; then
@@ -113,8 +120,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -131,6 +138,7 @@ jobs:
           labels: |
             org.opencontainers.image.title=terminus-${{ matrix.image }}
             org.opencontainers.image.description=Terminus ${{ matrix.image }} component
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - name: Build and publish image
         uses: docker/build-push-action@v6
