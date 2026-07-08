@@ -1,0 +1,147 @@
+name: Build and Publish Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional image tag to publish, for example v1.1.0"
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+      - "terminus-v*"
+  pull_request:
+    paths:
+      - ".github/workflows/images.yml"
+      - "cmd/**"
+      - "docker/**"
+      - "go.mod"
+      - "go.sum"
+      - "pkg/**"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: enforcer
+            context: docker/enforcer
+            dockerfile: docker/enforcer/Dockerfile
+            package: ./cmd/terminus-enforcer
+            binary: terminus-enforcer-linux
+            cgo: "1"
+          - image: scheduler
+            context: docker/scheduler
+            dockerfile: docker/scheduler/Dockerfile
+            package: ./cmd/terminus-scheduler
+            binary: terminus-scheduler-linux
+            cgo: "0"
+          - image: quota-injector
+            context: docker/quota-injector
+            dockerfile: docker/quota-injector/Dockerfile
+            package: ./cmd/terminus-quota-injector
+            binary: terminus-quota-injector-linux
+            cgo: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image variables
+        id: vars
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          version=""
+
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            version="${INPUT_VERSION}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#terminus-}"
+          fi
+
+          if [[ -n "${version}" && "${version}" != v* ]]; then
+            version="v${version}"
+          fi
+
+          build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          echo "owner=${owner}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "build_time=${build_time}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Linux binary
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -a \
+            -ldflags '-s -w -extldflags "-static"' \
+            -o "${{ matrix.context }}/${{ matrix.binary }}" \
+            "${{ matrix.package }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=${{ steps.vars.outputs.version }},enable=${{ steps.vars.outputs.version != '' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+          labels: |
+            org.opencontainers.image.title=terminus-${{ matrix.image }}
+            org.opencontainers.image.description=Terminus ${{ matrix.image }} component
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            GIT_COMMIT_VERSION=${{ github.sha }}
+            GIT_COMMIT_TIME=${{ steps.vars.outputs.build_time }}
